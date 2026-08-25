@@ -4,7 +4,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   Fragment,
 } from "react";
@@ -48,7 +47,8 @@ interface Entry {
   type: MemType;
   title: string;
   status: MemStatus;
-  confidence: number | null;
+  confidence: "low" | "medium" | "high" | null;
+  trust: "untrusted" | "reviewed" | "authoritative";
   provenance: string | null;
   tags: string[];
   links: string[];
@@ -125,15 +125,13 @@ async function getJSON<T>(url: string): Promise<T | null> {
 }
 
 // ── Confidence dot ────────────────────────────────────────
-function confidenceMeta(c: number): { label: string; color: string } {
-  // Accept 0–1 or 0–100 scales.
-  const v = c > 1 ? c / 100 : c;
-  if (v >= 0.75) return { label: "high confidence", color: "var(--up)" };
-  if (v >= 0.4) return { label: "medium confidence", color: "var(--warn)" };
+function confidenceMeta(c: "low" | "medium" | "high"): { label: string; color: string } {
+  if (c === "high") return { label: "high confidence", color: "var(--up)" };
+  if (c === "medium") return { label: "medium confidence", color: "var(--warn)" };
   return { label: "low confidence", color: "var(--down)" };
 }
 
-function ConfidenceDot({ value }: { value: number }) {
+function ConfidenceDot({ value }: { value: "low" | "medium" | "high" }) {
   const { label, color } = confidenceMeta(value);
   return (
     <span
@@ -445,16 +443,14 @@ function EntryEditor({
       .split(",")
       .map((t) => t.trim().toLowerCase())
       .filter(Boolean);
-    const confNum = d.confidence.trim() ? Number(d.confidence) : null;
     const body: Record<string, unknown> = {
       id: d.id,
-      path: d.path,
       type: d.type,
       title: d.title.trim(),
       body: d.body,
       tags,
       status: d.status,
-      confidence: Number.isFinite(confNum as number) ? confNum : null,
+      confidence: d.confidence || "medium",
     };
     try {
       const r = await fetch("/api/hermes/memory", {
@@ -519,11 +515,11 @@ function EntryEditor({
               <Check className="w-6 h-6" style={{ color: "var(--up)" }} />
             </div>
             <p className="text-[15px] font-medium text-[var(--text)]">
-              Saved — Hermes will write it to memory
+              Awaiting your approval
             </p>
             <p className="mt-1.5 text-[12.5px] text-[var(--text-3)] max-w-xs">
-              The bridge is committing this to the wiki. It will reappear here
-              once mirrored.
+              This disk write is side-effecting. Approve it in the Hermes
+              inbox; it will appear here after the bridge commits and mirrors it.
             </p>
           </div>
         ) : (
@@ -580,13 +576,16 @@ function EntryEditor({
 
             <div>
               <label className={labelCls}>Confidence (optional)</label>
-              <input
+              <select
                 value={d.confidence}
                 onChange={(e) => set("confidence", e.target.value)}
-                placeholder="0–1 (e.g. 0.9)"
-                inputMode="decimal"
                 className={`${inputCls} num`}
-              />
+              >
+                <option value="">medium (default)</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
             </div>
 
             <div>
@@ -607,7 +606,7 @@ function EntryEditor({
                 disabled={busy || !d.title.trim()}
               >
                 <Check className="w-3.5 h-3.5" />
-                Save to memory
+                Request memory write
               </Button>
               <Button variant="ghost" onClick={onClose}>
                 Cancel
@@ -663,9 +662,9 @@ export default function MemoryWikiPage() {
 
   // Reload on filter change + poll every 10s
   useEffect(() => {
-    load();
+    const initial = setTimeout(load, 0);
     const iv = setInterval(load, 10000);
-    return () => clearInterval(iv);
+    return () => { clearTimeout(initial); clearInterval(iv); };
   }, [load]);
 
   const chips = useMemo(() => {
@@ -691,8 +690,8 @@ export default function MemoryWikiPage() {
               Memory Wiki
             </h1>
             <p className="mt-3.5 text-[14px] text-[var(--text-2)] leading-relaxed max-w-lg">
-              Hermes&apos; long-term brain — everything it remembers, that you
-              can browse, search, and correct.
+              A human-auditable evidence ledger used alongside Hermes&apos;
+              hot memory and configured recall provider.
             </p>
             <p className="num text-[11.5px] text-[var(--text-3)] mt-3">
               synced {timeAgo(lastSync)}

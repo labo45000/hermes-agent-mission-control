@@ -499,13 +499,19 @@ model HermesTask {
 
 // ─── Hermes Memory Wiki (warm tier — git-tracked markdown, mirrored) ─────
 model HermesMemory {
-  id         String    @id            // wiki entry slug (relative path w/o .md)
+  id         String                   // canonical wiki entry slug
+  namespace  String    @default("default") // Hermes profile/workspace boundary
   path       String                   // file path relative to wiki root
   type       String    @default("fact")
   title      String
   status     String    @default("active")
   confidence String?
+  trust      String    @default("reviewed") // untrusted | reviewed | authoritative
   provenance String?
+  sourceUri  String?
+  supersedesId String?
+  revision   Int       @default(1)
+  contentHash String?
   tags       String[]
   links      String[]
   body       String    @default("")
@@ -514,6 +520,9 @@ model HermesMemory {
   updatedAt  DateTime  @default(now())
   syncedAt   DateTime  @updatedAt
 
+  @@id([namespace, id])
   @@index([type])
   @@index([status])
+  @@index([namespace, status])
+  @@unique([namespace, path])
 }
