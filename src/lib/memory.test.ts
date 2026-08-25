@@ -11,6 +11,7 @@ test("validates enums, sizes and canonical ids", () => {
   assert.equal(parseMemoryInput({ title: "Fact", confidence: "high", trust: "authoritative" }).confidence, "high");
   assert.equal(parseMemoryInput({ title: "Fact", confidence: 0.9 }).confidence, "medium");
   assert.throws(() => parseMemoryInput({ title: "x", body: "a".repeat(100_001) }), /body/);
+  assert.throws(() => parseMemoryInput({ title: "x", validFrom: "2026-08-26", validTo: "2026-08-25" }), /precede/);
   assert.equal(canonicalMemoryId("../bad", "Résumé client"), "resume-client");
 });
 

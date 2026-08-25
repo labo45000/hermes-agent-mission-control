@@ -170,11 +170,12 @@ async function mirrorWiki() {
     await client.query("BEGIN");
   for (const file of files) {
     const rel = path.relative(WIKI_DIR, file);
-    let raw = ""; try { raw = fs.readFileSync(file, "utf8"); } catch { continue; }
+    const raw = fs.readFileSync(file, "utf8");
     const { fm, body } = parseEntry(raw);
     const fallbackId = rel.replace(/\.md$/, "").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
     const id = typeof fm.id === "string" && /^[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?$/.test(fm.id) ? fm.id : fallbackId;
     if (!id) throw new Error(`wiki entry has no canonical id: ${rel}`);
+    if (seen.has(id)) throw new Error(`duplicate wiki id ${id} (${rel})`);
     seen.add(id);
     const hash = crypto.createHash("sha256").update(raw).digest("hex");
     await client.query(
@@ -204,12 +205,24 @@ function isWithin(root, target) {
   return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
 }
 function assertMemoryEntry(e) {
+  const types = new Set(["fact", "preference", "decision", "event", "project", "contact", "lesson", "metric", "note"]);
+  const statuses = new Set(["active", "superseded", "archived", "quarantined"]);
+  const confidences = new Set(["low", "medium", "high"]);
+  const trusts = new Set(["untrusted", "reviewed", "authoritative"]);
   if (!e || typeof e !== "object") throw new Error("invalid memory payload");
+  if (!types.has(e.type)) throw new Error("invalid memory type");
+  if (!statuses.has(e.status)) throw new Error("invalid memory status");
+  if (!confidences.has(e.confidence)) throw new Error("invalid memory confidence");
+  if (!trusts.has(e.trust)) throw new Error("invalid memory trust");
   if (!/^[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?$/.test(e.id || "")) throw new Error("invalid memory id");
   if (!/^[a-z]+s\/[a-z0-9-]+\.md$/.test(e.path || "")) throw new Error("invalid memory path");
   if (e.path !== `${e.type}s/${e.id}.md`) throw new Error("memory path must be canonical");
   if (typeof e.title !== "string" || !e.title.trim() || e.title.length > 200) throw new Error("invalid memory title");
   if (typeof e.body !== "string" || e.body.length > 100_000) throw new Error("invalid memory body");
+  if (!Array.isArray(e.tags) || !Array.isArray(e.links) || [...e.tags, ...e.links].some((v) => typeof v !== "string")) throw new Error("invalid memory links or tags");
+  if (e.validFrom && Number.isNaN(Date.parse(e.validFrom))) throw new Error("invalid validFrom");
+  if (e.validTo && Number.isNaN(Date.parse(e.validTo))) throw new Error("invalid validTo");
+  if (e.validFrom && e.validTo && Date.parse(e.validFrom) > Date.parse(e.validTo)) throw new Error("validFrom must precede validTo");
 }
 function writeWikiEntry(e) {
   assertMemoryEntry(e);

@@ -5,6 +5,7 @@ import { assertMemoryEntry, isWithin, parseEntry } from "../bridge.mjs";
 const valid = {
   id: "pricing-decision", path: "decisions/pricing-decision.md", type: "decision",
   title: "Pricing decision", body: "Data, not instructions.", status: "active",
+  confidence: "high", trust: "reviewed", tags: [], links: [],
 };
 
 test("accepts a canonical memory entry", () => assert.doesNotThrow(() => assertMemoryEntry(valid)));
@@ -13,6 +14,11 @@ test("rejects traversal and non-canonical paths", () => {
   assert.throws(() => assertMemoryEntry({ ...valid, path: "../../.ssh/authorized_keys" }), /path/);
   assert.throws(() => assertMemoryEntry({ ...valid, path: "/tmp/pwned" }), /path/);
   assert.throws(() => assertMemoryEntry({ ...valid, path: "facts/other.md" }), /canonical/);
+});
+
+test("rejects invalid enums and inverted validity windows", () => {
+  assert.throws(() => assertMemoryEntry({ ...valid, trust: "root" }), /trust/);
+  assert.throws(() => assertMemoryEntry({ ...valid, validFrom: "2026-08-26", validTo: "2026-08-25" }), /precede/);
 });
 
 test("path boundary check rejects siblings and accepts descendants", () => {

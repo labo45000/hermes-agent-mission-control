@@ -39,6 +39,9 @@ export function parseMemoryInput(input: unknown) {
   if (body.length > MAX_BODY) throw new Error(`body must not exceed ${MAX_BODY} characters`);
   const id = canonicalMemoryId(value.id, title);
   const type = enumValue(value.type, MEMORY_TYPES, "note");
+  const validFrom = parseDate(value.validFrom);
+  const validTo = parseDate(value.validTo);
+  if (validFrom && validTo && validFrom > validTo) throw new Error("validFrom must precede validTo");
   return {
     id,
     // Paths are derived, never accepted from an HTTP client.
@@ -54,8 +57,8 @@ export function parseMemoryInput(input: unknown) {
     tags: strings(value.tags),
     links: strings(value.links),
     body,
-    validFrom: parseDate(value.validFrom),
-    validTo: parseDate(value.validTo),
+    validFrom,
+    validTo,
   };
 }
 

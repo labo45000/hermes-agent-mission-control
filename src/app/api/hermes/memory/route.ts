@@ -11,19 +11,24 @@ export async function GET(req: Request) {
   const type = url.searchParams.get("type");
   const status = url.searchParams.get("status") || "active";
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 100, 1), 300);
+  const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
   const where: Record<string, unknown> = { namespace };
   if (status !== "all") where.status = status;
   if (type && type !== "all") where.type = type;
-  if (q) where.OR = [
-    { title: { contains: q, mode: "insensitive" } },
-    { body: { contains: q, mode: "insensitive" } },
-    { tags: { has: q.toLowerCase() } },
-  ];
-  const candidates = await prisma.hermesMemory.findMany({ where, orderBy: { updatedAt: "desc" }, take: q ? 1000 : limit });
+  const terms = [...new Set(q.toLowerCase().split(/\s+/).filter(Boolean))].slice(0, 10);
+  if (terms.length) where.OR = terms.flatMap((term) => [
+    { title: { contains: term, mode: "insensitive" } },
+    { body: { contains: term, mode: "insensitive" } },
+    { tags: { has: term } },
+  ]);
+  const candidates = await prisma.hermesMemory.findMany({
+    where, orderBy: { updatedAt: "desc" }, take: q ? 1000 : limit,
+    skip: q ? 0 : offset,
+  });
   const entries = q
     ? candidates.map((entry) => ({ entry, score: memoryRelevance(entry, q) }))
       .filter(({ score }) => score > 0).sort((a, b) => b.score - a.score)
-      .slice(0, limit).map(({ entry }) => entry)
+      .slice(offset, offset + limit).map(({ entry }) => entry)
     : candidates;
   const countWhere = status === "all" ? { namespace } : { namespace, status };
   const all = await prisma.hermesMemory.findMany({ select: { type: true }, where: countWhere });
@@ -31,7 +36,7 @@ export async function GET(req: Request) {
   for (const e of all) typeCounts[e.type] = (typeCounts[e.type] || 0) + 1;
   const latest = await prisma.hermesMemory.findFirst({ where: { namespace }, orderBy: { syncedAt: "desc" }, select: { syncedAt: true } });
   const lastSync = latest?.syncedAt ?? null;
-  return NextResponse.json({ entries, typeCounts, total: all.length, lastSync });
+  return NextResponse.json({ entries, typeCounts, total: all.length, lastSync, offset, hasMore: offset + entries.length < all.length });
 }
 
 // POST { id?, type, title, body, tags?, links?, status?, confidence?, trust? }
