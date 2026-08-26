@@ -23,6 +23,9 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import YAML from "yaml";
 
 const execFileP = promisify(execFile);
 const HERMES = process.env.HERMES_BIN || "hermes";
@@ -31,6 +34,7 @@ const POLL_MS = Number(process.env.BRIDGE_POLL_MS || 5000);
 const MIRROR_MS = Number(process.env.BRIDGE_MIRROR_MS || 30000);
 const RUN_TIMEOUT_MS = Number(process.env.BRIDGE_RUN_TIMEOUT_MS || 240000);
 const WIKI_DIR = process.env.HERMES_WIKI || path.join(os.homedir(), ".hermes", "wiki");
+const MEMORY_NAMESPACE = process.env.HERMES_MEMORY_NAMESPACE || "default";
 const BRIEF_HOUR = Number(process.env.BRIEF_HOUR || 8);   // local hour to auto-generate the daily brief
 const BRIEF_PROMPT =
   "You are the operator's chief of staff. Produce today's brief. Read your memory wiki open-loops " +
@@ -42,11 +46,6 @@ const BRIEF_PROMPT =
 let lastBriefDate = null;
 
 const DB_URL = process.env.DATABASE_URL || "";
-if (!DB_URL) { console.error("DATABASE_URL is required (use the direct postgres:// URL, not a prisma:// Accelerate URL)"); process.exit(1); }
-if (DB_URL.startsWith("prisma://") || DB_URL.startsWith("prisma+")) {
-  console.error("DATABASE_URL is a Prisma Accelerate URL; the bridge needs a DIRECT postgres:// connection string (e.g. POSTGRES_URL).");
-  process.exit(1);
-}
 // Cloud Postgres (Prisma Postgres/Neon/Supabase/RDS) needs SSL; localhost doesn't.
 const isLocal = /@(localhost|127\.0\.0\.1)/.test(DB_URL);
 const pool = new pg.Pool({ connectionString: DB_URL, max: 4, ssl: isLocal ? undefined : { rejectUnauthorized: false } });
@@ -141,75 +140,122 @@ async function mirrorHealth() {
 /* ─────────────── Memory Wiki (warm tier: git-tracked markdown) ─────────────── */
 function parseEntry(md) {
   const m = md.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  const fm = {}; let body = md;
+  let fm = {}; let body = md;
   if (m) {
     body = m[2];
-    for (const line of m[1].split("\n")) {
-      const kv = line.match(/^([A-Za-z_]+):\s*(.*)$/);
-      if (!kv) continue;
-      const v = kv[2].trim();
-      if (v.startsWith("[") && v.endsWith("]")) fm[kv[1]] = v.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
-      else fm[kv[1]] = v === "null" || v === "" ? null : v;
-    }
+    const parsed = YAML.parse(m[1], { maxAliasCount: 0, uniqueKeys: true });
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) fm = parsed;
   }
   return { fm, body: body.trim() };
 }
-function walkMd(dir, out = []) {
-  let items = [];
-  try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+function walkMd(dir, out = [], root = dir) {
+  const items = fs.readdirSync(dir, { withFileTypes: true });
   for (const it of items) {
     const full = path.join(dir, it.name);
-    if (it.isDirectory()) { if (it.name !== ".git") walkMd(full, out); }
-    else if (it.name.endsWith(".md") && it.name !== "INDEX.md") out.push(full);
+    const stat = fs.lstatSync(full);
+    if (stat.isSymbolicLink()) continue;
+    if (it.isDirectory()) { if (it.name !== ".git") walkMd(full, out, root); }
+    else if (it.name.endsWith(".md") && it.name !== "INDEX.md" && isWithin(root, full)) out.push(full);
   }
   return out;
 }
 async function mirrorWiki() {
   if (!fs.existsSync(WIKI_DIR)) return;
+  const files = walkMd(WIKI_DIR);
+  // An empty mounted wiki is ambiguous. Never translate it into a destructive purge.
+  if (!files.length) { log("wiki scan empty; retaining mirrored memory"); return; }
   const seen = new Set();
-  for (const file of walkMd(WIKI_DIR)) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+  for (const file of files) {
     const rel = path.relative(WIKI_DIR, file);
-    const id = rel.replace(/\.md$/, "");
-    seen.add(id);
-    let raw = ""; try { raw = fs.readFileSync(file, "utf8"); } catch { continue; }
+    const raw = fs.readFileSync(file, "utf8");
     const { fm, body } = parseEntry(raw);
-    await q(
-      `INSERT INTO "HermesMemory" (id, path, type, title, status, confidence, provenance, tags, links, body, "validFrom", "validTo", "updatedAt", "syncedAt")
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now(), now())
-       ON CONFLICT (id) DO UPDATE SET path=EXCLUDED.path, type=EXCLUDED.type, title=EXCLUDED.title,
+    const fallbackId = rel.replace(/\.md$/, "").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    const id = typeof fm.id === "string" && /^[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?$/.test(fm.id) ? fm.id : fallbackId;
+    if (!id) throw new Error(`wiki entry has no canonical id: ${rel}`);
+    if (seen.has(id)) throw new Error(`duplicate wiki id ${id} (${rel})`);
+    seen.add(id);
+    const hash = crypto.createHash("sha256").update(raw).digest("hex");
+    await client.query(
+      `INSERT INTO "HermesMemory" (namespace, id, path, type, title, status, confidence, trust, provenance, "sourceUri", "supersedesId", revision, "contentHash", tags, links, body, "validFrom", "validTo", "updatedAt", "syncedAt")
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now(), now())
+       ON CONFLICT (namespace, id) DO UPDATE SET path=EXCLUDED.path, type=EXCLUDED.type, title=EXCLUDED.title,
          status=EXCLUDED.status, confidence=EXCLUDED.confidence, provenance=EXCLUDED.provenance,
-         tags=EXCLUDED.tags, links=EXCLUDED.links, body=EXCLUDED.body,
-         "validFrom"=EXCLUDED."validFrom", "validTo"=EXCLUDED."validTo", "syncedAt"=now()`,
-      [id, rel, fm.type || "fact", fm.title || id, fm.status || "active", fm.confidence || null,
-       fm.provenance || null, Array.isArray(fm.tags) ? fm.tags : [], Array.isArray(fm.links) ? fm.links : [],
+         trust=EXCLUDED.trust, "sourceUri"=EXCLUDED."sourceUri", "supersedesId"=EXCLUDED."supersedesId",
+         revision=EXCLUDED.revision, "contentHash"=EXCLUDED."contentHash", tags=EXCLUDED.tags,
+         links=EXCLUDED.links, body=EXCLUDED.body, "validFrom"=EXCLUDED."validFrom",
+         "validTo"=EXCLUDED."validTo", "updatedAt"=now(), "syncedAt"=now()`,
+      [MEMORY_NAMESPACE, id, rel, fm.type || "fact", fm.title || id, fm.status || "active", fm.confidence || null,
+       fm.trust || "untrusted", fm.provenance || null, fm.source_uri || null, fm.supersedes_id || null,
+       Number(fm.revision) || 1, hash, Array.isArray(fm.tags) ? fm.tags : [], Array.isArray(fm.links) ? fm.links : [],
        body, fm.valid_from || null, fm.valid_to || null]
     );
   }
-  if (seen.size) await q(`DELETE FROM "HermesMemory" WHERE id <> ALL($1::text[])`, [[...seen]]);
-  else await q(`DELETE FROM "HermesMemory"`);
+  await client.query(`DELETE FROM "HermesMemory" WHERE namespace=$1 AND id <> ALL($2::text[])`, [MEMORY_NAMESPACE, [...seen]]);
+  await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+}
+function isWithin(root, target) {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
+}
+function assertMemoryEntry(e) {
+  const types = new Set(["fact", "preference", "decision", "event", "project", "contact", "lesson", "metric", "note"]);
+  const statuses = new Set(["active", "superseded", "archived", "quarantined"]);
+  const confidences = new Set(["low", "medium", "high"]);
+  const trusts = new Set(["untrusted", "reviewed", "authoritative"]);
+  if (!e || typeof e !== "object") throw new Error("invalid memory payload");
+  if (!types.has(e.type)) throw new Error("invalid memory type");
+  if (!statuses.has(e.status)) throw new Error("invalid memory status");
+  if (!confidences.has(e.confidence)) throw new Error("invalid memory confidence");
+  if (!trusts.has(e.trust)) throw new Error("invalid memory trust");
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?$/.test(e.id || "")) throw new Error("invalid memory id");
+  if (!/^[a-z]+s\/[a-z0-9-]+\.md$/.test(e.path || "")) throw new Error("invalid memory path");
+  if (e.path !== `${e.type}s/${e.id}.md`) throw new Error("memory path must be canonical");
+  if (typeof e.title !== "string" || !e.title.trim() || e.title.length > 200) throw new Error("invalid memory title");
+  if (typeof e.body !== "string" || e.body.length > 100_000) throw new Error("invalid memory body");
+  if (!Array.isArray(e.tags) || !Array.isArray(e.links) || [...e.tags, ...e.links].some((v) => typeof v !== "string")) throw new Error("invalid memory links or tags");
+  if (e.validFrom && Number.isNaN(Date.parse(e.validFrom))) throw new Error("invalid validFrom");
+  if (e.validTo && Number.isNaN(Date.parse(e.validTo))) throw new Error("invalid validTo");
+  if (e.validFrom && e.validTo && Date.parse(e.validFrom) > Date.parse(e.validTo)) throw new Error("validFrom must precede validTo");
 }
 function writeWikiEntry(e) {
-  const rel = e.path || `${e.type || "note"}s/${e.id}.md`;
-  const full = path.join(WIKI_DIR, rel);
+  assertMemoryEntry(e);
+  const rel = e.path;
+  const full = path.resolve(WIKI_DIR, rel);
+  if (!isWithin(WIKI_DIR, full)) throw new Error("memory path escapes wiki root");
   fs.mkdirSync(path.dirname(full), { recursive: true });
+  const parentReal = fs.realpathSync(path.dirname(full));
+  if (!isWithin(WIKI_DIR, parentReal)) throw new Error("memory directory escapes wiki root");
+  if (fs.existsSync(full) && fs.lstatSync(full).isSymbolicLink()) throw new Error("refusing to write through symlink");
   const now = new Date().toISOString().slice(0, 10);
-  const lines = [
-    "---", `id: ${e.id}`, `type: ${e.type || "note"}`, `title: ${e.title}`,
-    `status: ${e.status || "active"}`,
-    e.confidence ? `confidence: ${e.confidence}` : null,
-    `provenance: ${e.provenance || "dashboard"}`,
-    `tags: [${(e.tags || []).join(", ")}]`, `links: [${(e.links || []).join(", ")}]`,
-    `updated: ${now}`, "---", "", e.body || "", "",
-  ].filter((l) => l !== null);
-  fs.writeFileSync(full, lines.join("\n"), "utf8");
+  const previous = fs.existsSync(full) ? parseEntry(fs.readFileSync(full, "utf8")).fm : {};
+  const frontmatter = {
+    id: e.id, type: e.type, title: e.title, status: e.status,
+    confidence: e.confidence, trust: e.trust, provenance: e.provenance,
+    source_uri: e.sourceUri, supersedes_id: e.supersedesId,
+    tags: e.tags || [], links: e.links || [], valid_from: e.validFrom,
+    valid_to: e.validTo, revision: (Number(previous.revision) || 0) + 1, updated: now,
+  };
+  const content = `---\n${YAML.stringify(frontmatter).trimEnd()}\n---\n\n${e.body || ""}\n`;
+  const temp = path.join(path.dirname(full), `.${path.basename(full)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  fs.writeFileSync(temp, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  fs.renameSync(temp, full);
   return rel;
 }
 async function gitCommitWiki(msg) {
-  try {
-    if (!fs.existsSync(path.join(WIKI_DIR, ".git"))) await execFileP("git", ["-C", WIKI_DIR, "init"]).catch(() => {});
-    await execFileP("git", ["-C", WIKI_DIR, "add", "-A"]).catch(() => {});
-    await execFileP("git", ["-C", WIKI_DIR, "commit", "-m", msg]).catch(() => {});
-  } catch { /* ignore */ }
+  if (!fs.existsSync(path.join(WIKI_DIR, ".git"))) await execFileP("git", ["-C", WIKI_DIR, "init"]);
+  await execFileP("git", ["-C", WIKI_DIR, "add", "-A"]);
+  try { await execFileP("git", ["-C", WIKI_DIR, "commit", "-m", msg]); }
+  catch (error) {
+    const status = await execFileP("git", ["-C", WIKI_DIR, "status", "--porcelain"]);
+    if (status.stdout.trim()) throw error;
+  }
 }
 
 /* ─────────────── Chief-of-staff daily brief ─────────────── */
@@ -283,9 +329,13 @@ async function runRequest(r) {
 }
 
 async function processQueue() {
-  const { rows } = await q(
-    `SELECT * FROM "AgentRequest" WHERE status IN ('queued','approved') ORDER BY "createdAt" ASC LIMIT 3`
-  );
+  const { rows } = await q(`
+    UPDATE "AgentRequest" SET status='running', "startedAt"=now(), "updatedAt"=now()
+    WHERE id IN (
+      SELECT id FROM "AgentRequest" WHERE status IN ('queued','approved')
+      ORDER BY "createdAt" ASC FOR UPDATE SKIP LOCKED LIMIT 3
+    ) RETURNING *
+  `);
   for (const r of rows) await runRequest(r);
 }
 
@@ -300,6 +350,10 @@ async function mirrorTick() {
 }
 
 async function main() {
+  if (!DB_URL) throw new Error("DATABASE_URL is required (use a direct postgres:// URL)");
+  if (DB_URL.startsWith("prisma://") || DB_URL.startsWith("prisma+")) {
+    throw new Error("DATABASE_URL must be a direct postgres:// connection, not Prisma Accelerate");
+  }
   log(`hermes-bridge up · board=${BOARD} · poll=${POLL_MS}ms · mirror=${MIRROR_MS}ms`);
   await emit("status", "Bridge connected", { level: "up" });
   await mirrorTick();
@@ -308,4 +362,8 @@ async function main() {
   const tick = async () => { try { await processQueue(); } catch (e) { log("queue loop", e.message); } finally { setTimeout(tick, POLL_MS); } };
   tick();
 }
-main().catch((e) => { console.error("fatal", e); process.exit(1); });
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  main().catch((e) => { console.error("fatal", e); process.exit(1); });
+}
+
+export { assertMemoryEntry, isWithin, parseEntry, writeWikiEntry };

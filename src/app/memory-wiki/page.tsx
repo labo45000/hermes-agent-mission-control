@@ -4,7 +4,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   Fragment,
 } from "react";
@@ -40,7 +39,7 @@ type MemType =
   | "lesson"
   | "metric"
   | "note";
-type MemStatus = "active" | "superseded" | "archived";
+type MemStatus = "active" | "superseded" | "archived" | "quarantined";
 
 interface Entry {
   id: string;
@@ -48,8 +47,11 @@ interface Entry {
   type: MemType;
   title: string;
   status: MemStatus;
-  confidence: number | null;
+  confidence: "low" | "medium" | "high" | null;
+  trust: "untrusted" | "reviewed" | "authoritative";
   provenance: string | null;
+  sourceUri: string | null;
+  supersedesId: string | null;
   tags: string[];
   links: string[];
   body: string;
@@ -125,15 +127,13 @@ async function getJSON<T>(url: string): Promise<T | null> {
 }
 
 // ── Confidence dot ────────────────────────────────────────
-function confidenceMeta(c: number): { label: string; color: string } {
-  // Accept 0–1 or 0–100 scales.
-  const v = c > 1 ? c / 100 : c;
-  if (v >= 0.75) return { label: "high confidence", color: "var(--up)" };
-  if (v >= 0.4) return { label: "medium confidence", color: "var(--warn)" };
+function confidenceMeta(c: "low" | "medium" | "high"): { label: string; color: string } {
+  if (c === "high") return { label: "high confidence", color: "var(--up)" };
+  if (c === "medium") return { label: "medium confidence", color: "var(--warn)" };
   return { label: "low confidence", color: "var(--down)" };
 }
 
-function ConfidenceDot({ value }: { value: number }) {
+function ConfidenceDot({ value }: { value: "low" | "medium" | "high" }) {
   const { label, color } = confidenceMeta(value);
   return (
     <span
@@ -342,6 +342,11 @@ function EntryCard({
                 </span>
               </div>
             )}
+            <div className="flex items-center gap-2 text-[11.5px] text-[var(--text-3)]">
+              <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+              <span>trust <span className="text-[var(--text-2)]">{entry.trust}</span></span>
+            </div>
+            {entry.sourceUri && <div className="text-[11.5px] text-[var(--text-3)] break-all">source reference: {entry.sourceUri}</div>}
             {(entry.validFrom || entry.validTo) && (
               <div className="flex items-center gap-2 num text-[11.5px] text-[var(--text-3)]">
                 <CalendarClock className="w-3.5 h-3.5 shrink-0" />
@@ -393,6 +398,13 @@ interface Draft {
   tags: string;
   status: MemStatus;
   confidence: string;
+  trust: Entry["trust"];
+  provenance: string;
+  sourceUri: string;
+  supersedesId: string;
+  links: string;
+  validFrom: string;
+  validTo: string;
   body: string;
 }
 
@@ -403,6 +415,13 @@ function emptyDraft(): Draft {
     tags: "",
     status: "active",
     confidence: "",
+    trust: "reviewed",
+    provenance: "dashboard",
+    sourceUri: "",
+    supersedesId: "",
+    links: "",
+    validFrom: "",
+    validTo: "",
     body: "",
   };
 }
@@ -416,6 +435,13 @@ function draftFrom(e: Entry): Draft {
     tags: e.tags.join(", "),
     status: e.status,
     confidence: e.confidence != null ? String(e.confidence) : "",
+    trust: e.trust,
+    provenance: e.provenance || "dashboard",
+    sourceUri: e.sourceUri || "",
+    supersedesId: e.supersedesId || "",
+    links: e.links.join(", "),
+    validFrom: e.validFrom?.slice(0, 10) || "",
+    validTo: e.validTo?.slice(0, 10) || "",
     body: e.body,
   };
 }
@@ -445,16 +471,21 @@ function EntryEditor({
       .split(",")
       .map((t) => t.trim().toLowerCase())
       .filter(Boolean);
-    const confNum = d.confidence.trim() ? Number(d.confidence) : null;
     const body: Record<string, unknown> = {
       id: d.id,
-      path: d.path,
       type: d.type,
       title: d.title.trim(),
       body: d.body,
       tags,
       status: d.status,
-      confidence: Number.isFinite(confNum as number) ? confNum : null,
+      confidence: d.confidence || "medium",
+      trust: d.trust,
+      provenance: d.provenance,
+      sourceUri: d.sourceUri || null,
+      supersedesId: d.supersedesId || null,
+      links: d.links.split(",").map((link) => link.trim()).filter(Boolean),
+      validFrom: d.validFrom || null,
+      validTo: d.validTo || null,
     };
     try {
       const r = await fetch("/api/hermes/memory", {
@@ -464,9 +495,6 @@ function EntryEditor({
       });
       if (r.ok) {
         setSaved(true);
-        setTimeout(() => {
-          onSaved();
-        }, 2000);
       } else {
         setBusy(false);
       }
@@ -519,12 +547,16 @@ function EntryEditor({
               <Check className="w-6 h-6" style={{ color: "var(--up)" }} />
             </div>
             <p className="text-[15px] font-medium text-[var(--text)]">
-              Saved — Hermes will write it to memory
+              Awaiting your approval
             </p>
             <p className="mt-1.5 text-[12.5px] text-[var(--text-3)] max-w-xs">
-              The bridge is committing this to the wiki. It will reappear here
-              once mirrored.
+              This disk write is side-effecting. Approve it in the Hermes
+              inbox; it will appear here after the bridge commits and mirrors it.
             </p>
+            <div className="mt-5 flex gap-2">
+              <a href="/hermes" className="btn-primary px-3 py-2 text-[12px]">Open approval inbox</a>
+              <Button variant="ghost" size="sm" onClick={onSaved}>Done</Button>
+            </div>
           </div>
         ) : (
           <div className="space-y-4">
@@ -564,6 +596,7 @@ function EntryEditor({
                   <option value="active">active</option>
                   <option value="superseded">superseded</option>
                   <option value="archived">archived</option>
+                  <option value="quarantined">quarantined</option>
                 </select>
               </div>
             </div>
@@ -580,13 +613,47 @@ function EntryEditor({
 
             <div>
               <label className={labelCls}>Confidence (optional)</label>
-              <input
+              <select
                 value={d.confidence}
                 onChange={(e) => set("confidence", e.target.value)}
-                placeholder="0–1 (e.g. 0.9)"
-                inputMode="decimal"
                 className={`${inputCls} num`}
-              />
+              >
+                <option value="">medium (default)</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={labelCls}>Trust</label>
+                <select value={d.trust} onChange={(e) => set("trust", e.target.value as Entry["trust"])} className={inputCls}>
+                  <option value="untrusted">untrusted</option>
+                  <option value="reviewed">reviewed</option>
+                  <option value="authoritative">authoritative</option>
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Provenance</label>
+                <input value={d.provenance} onChange={(e) => set("provenance", e.target.value)} className={inputCls} />
+              </div>
+            </div>
+
+            <div>
+              <label className={labelCls}>Source URL or reference</label>
+              <input value={d.sourceUri} onChange={(e) => set("sourceUri", e.target.value)} placeholder="https://… or session:…" className={inputCls} />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className={labelCls}>Valid from</label><input type="date" value={d.validFrom} onChange={(e) => set("validFrom", e.target.value)} className={inputCls} /></div>
+              <div><label className={labelCls}>Valid to</label><input type="date" value={d.validTo} onChange={(e) => set("validTo", e.target.value)} className={inputCls} /></div>
+            </div>
+
+            <div>
+              <label className={labelCls}>Links / superseded entry</label>
+              <input value={d.links} onChange={(e) => set("links", e.target.value)} placeholder="related-id, another-id" className={inputCls} />
+              <input value={d.supersedesId} onChange={(e) => set("supersedesId", e.target.value)} placeholder="supersedes id (optional)" className={`${inputCls} mt-2`} />
             </div>
 
             <div>
@@ -607,7 +674,7 @@ function EntryEditor({
                 disabled={busy || !d.title.trim()}
               >
                 <Check className="w-3.5 h-3.5" />
-                Save to memory
+                Request memory write
               </Button>
               <Button variant="ghost" onClick={onClose}>
                 Cancel
@@ -663,9 +730,9 @@ export default function MemoryWikiPage() {
 
   // Reload on filter change + poll every 10s
   useEffect(() => {
-    load();
+    const initial = setTimeout(load, 0);
     const iv = setInterval(load, 10000);
-    return () => clearInterval(iv);
+    return () => { clearTimeout(initial); clearInterval(iv); };
   }, [load]);
 
   const chips = useMemo(() => {
@@ -691,8 +758,8 @@ export default function MemoryWikiPage() {
               Memory Wiki
             </h1>
             <p className="mt-3.5 text-[14px] text-[var(--text-2)] leading-relaxed max-w-lg">
-              Hermes&apos; long-term brain — everything it remembers, that you
-              can browse, search, and correct.
+              A human-auditable evidence ledger used alongside Hermes&apos;
+              hot memory and configured recall provider.
             </p>
             <p className="num text-[11.5px] text-[var(--text-3)] mt-3">
               synced {timeAgo(lastSync)}

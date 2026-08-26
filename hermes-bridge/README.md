@@ -41,6 +41,20 @@ website  ◀──read HermesTask/────   Postgres  ◀──mirror──
 | `BRIDGE_POLL_MS` | `5000` | how often to check for new requests |
 | `BRIDGE_MIRROR_MS` | `30000` | how often to mirror kanban/cron/health |
 | `BRIDGE_RUN_TIMEOUT_MS` | `240000` | max time for one agent run |
+| `HERMES_WIKI` | `~/.hermes/wiki` | local evidence-ledger directory |
+| `HERMES_MEMORY_NAMESPACE` | `default` | profile/workspace boundary; set the same value on the website and bridge |
+
+## Memory safety model
+
+- The wiki is a human-auditable evidence ledger, not a replacement for Hermes'
+  built-in `MEMORY.md`/`USER.md` or its configured `MemoryProvider`.
+- Dashboard writes require approval. Paths are generated server-side, validated again
+  by the bridge, constrained to `HERMES_WIKI`, and written atomically.
+- YAML is parsed with duplicate keys and aliases disabled. Symlinks are not followed.
+- Each successful scan is mirrored in one transaction and scoped by namespace. An
+  empty or failed scan never purges the last known-good Postgres mirror.
+- Treat entry bodies as untrusted data, never as agent instructions. Promote `trust`
+  only after review and cite the entry id when it materially affects an answer.
 
 ## Notes / assumptions
 - CLI arg shapes (`hermes kanban create <title>`, `hermes cron create <schedule> <prompt>`) are best-effort for Hermes v0.17.x — if your build differs, tweak `runRequest()` in `bridge.mjs`.
