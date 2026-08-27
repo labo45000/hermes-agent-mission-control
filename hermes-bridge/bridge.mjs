@@ -36,6 +36,8 @@ const RUN_TIMEOUT_MS = Number(process.env.BRIDGE_RUN_TIMEOUT_MS || 240000);
 const WIKI_DIR = process.env.HERMES_WIKI || path.join(os.homedir(), ".hermes", "wiki");
 const MEMORY_NAMESPACE = process.env.HERMES_MEMORY_NAMESPACE || "default";
 const BRIEF_HOUR = Number(process.env.BRIEF_HOUR || 8);   // local hour to auto-generate the daily brief
+const PROFILE_STORE_KEY = "hermes-profiles:turbo-main-v1";
+const TURBO_PROFILES = new Set(["default","ailab","backtestvalidator","brandcanon","builder","contentmanager","contentqa","editorialstrategy","ofmcompliance","ofmeditorial","ofmmanager","opsbrain","personacanon","polymarketstructure","quantresearch","scriptcopy","tradingmanager","tradingrisk"]);
 const BRIEF_PROMPT =
   "You are the operator's chief of staff. Produce today's brief. Read your memory wiki open-loops " +
   "(~/.hermes/wiki), the kanban board, and recent activity. Output ONLY valid JSON (no prose, no code fences) " +
@@ -135,6 +137,38 @@ async function mirrorHealth() {
     gateway = /gateway[^\n]*(running|online)/i.test(out) ? "running" : "stopped";
   } catch (e) { detail = e.message.split("\n")[0]; }
   await setStore("hermes-health", { online, gateway, detail, lastSeen: new Date().toISOString() });
+}
+
+function parseProfileList(output) {
+  const lines = String(output || "").replace(/\r/g, "").split("\n");
+  while (lines.at(-1) === "") lines.pop();
+  if (lines[0] === "") lines.shift();
+
+  const expectedHeader = " Profile          Model                        Gateway      Alias        Distribution";
+  if (lines.length !== TURBO_PROFILES.size + 2 || lines[0] !== expectedHeader) return [];
+  if (!/^\s*─+\s+─+\s+─+\s+─+\s+─+\s*$/.test(lines[1])) return [];
+  if (/secret|token|api[_-]?key|password|credential|private[_-]?key|ignore previous/i.test(lines.join("\n"))) return [];
+
+  const found = new Map();
+  for (const line of lines.slice(2)) {
+    const match = line.match(/^\s*(◆)?([a-z0-9]+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$/);
+    if (!match) return [];
+    const [, marker, name, , gateway] = match;
+    if ((marker && name !== "default") || !TURBO_PROFILES.has(name) || found.has(name)) return [];
+    const status = gateway === "running" ? "online" : gateway === "stopped" ? "offline" : "unknown";
+    found.set(name, { name, status });
+  }
+
+  if (found.size !== TURBO_PROFILES.size || [...TURBO_PROFILES].some((name) => !found.has(name))) return [];
+  return [...found.values()];
+}
+async function mirrorProfiles() {
+  try {
+    const out=await hermes(["profile","list"],{timeout:15000});
+    const profiles=parseProfileList(out);
+    if (!profiles.length) { log("profile list yielded no recognized profiles; retaining mirror"); return; }
+    await setStore(PROFILE_STORE_KEY,{profiles,syncedAt:new Date().toISOString(),source:"hermes profile list"});
+  } catch(e) { log("profile list failed:",e.message.split("\n")[0]); }
 }
 
 /* ─────────────── Memory Wiki (warm tier: git-tracked markdown) ─────────────── */
@@ -344,6 +378,7 @@ async function mirrorTick() {
   try { await mirrorKanban(); } catch (e) { log("mirrorKanban err", e.message); }
   try { await mirrorCrons(); } catch (e) { log("mirrorCrons err", e.message); }
   try { await mirrorHealth(); } catch (e) { log("mirrorHealth err", e.message); }
+  try { await mirrorProfiles(); } catch (e) { log("mirrorProfiles err", e.message); }
   try { await mirrorWiki(); } catch (e) { log("mirrorWiki err", e.message); }
   try { await mirrorCost(); } catch (e) { log("mirrorCost err", e.message); }
   try { await maybeDailyBrief(); } catch (e) { log("maybeDailyBrief err", e.message); }
@@ -366,4 +401,4 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   main().catch((e) => { console.error("fatal", e); process.exit(1); });
 }
 
-export { assertMemoryEntry, isWithin, parseEntry, writeWikiEntry };
+export { assertMemoryEntry, isWithin, parseEntry, parseProfileList, writeWikiEntry };

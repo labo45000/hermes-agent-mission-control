@@ -24,6 +24,9 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [newTask, setNewTask] = useState("");
   const [showAddTask, setShowAddTask] = useState(false);
+  const [sourceStatus, setSourceStatus] = useState<'available' | 'unavailable'>('unavailable');
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchTasks();
@@ -33,9 +36,16 @@ export default function TasksPage() {
     try {
       const res = await fetch("/api/tasks");
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Tasks request failed (${res.status})`);
       setTasks(data.tasks || []);
+      setSourceStatus(data.status === 'available' ? 'available' : 'unavailable');
+      setUpdatedAt(typeof data.updatedAt === 'string' ? data.updatedAt : null);
+      setError(null);
     } catch (e) {
-      console.error("Failed to fetch tasks", e);
+      setTasks([]);
+      setSourceStatus('unavailable');
+      setUpdatedAt(null);
+      setError(e instanceof Error ? e.message : 'Tasks are unavailable');
     } finally {
       setLoading(false);
     }
@@ -44,11 +54,12 @@ export default function TasksPage() {
   async function addTask() {
     if (!newTask.trim()) return;
     try {
-      await fetch("/api/tasks", {
+      const response = await fetch("/api/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: newTask, status: "Not started" }),
       });
+      if (!response.ok) throw new Error(`Task was not created (${response.status})`);
       setNewTask("");
       setShowAddTask(false);
       fetchTasks();
@@ -59,11 +70,12 @@ export default function TasksPage() {
 
   async function updateTaskStatus(taskId: string, newStatus: string) {
     try {
-      await fetch("/api/tasks", {
+      const response = await fetch("/api/tasks", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: taskId, status: newStatus }),
       });
+      if (!response.ok) throw new Error(`Task was not updated (${response.status})`);
       fetchTasks();
     } catch (e) {
       console.error("Failed to update task", e);
@@ -101,11 +113,13 @@ export default function TasksPage() {
       <div className="relative z-10 h-full flex flex-col w-full mx-auto pt-4 pb-16">
         <div className="hq-rise flex justify-between items-end gap-4 mb-10" style={rise(0)}>
           <div>
-            <div className="eyebrow mb-2">Synced with Notion</div>
+            <div className="eyebrow mb-2">{sourceStatus === 'available' && updatedAt ? `Notion · ${new Date(updatedAt).toLocaleString()}` : 'Notion unavailable'}</div>
             <h1 className="text-[32px] font-semibold tracking-[-0.025em] leading-none text-[var(--text)]">Tasks</h1>
           </div>
-          <Button variant="primary" onClick={() => setShowAddTask(true)}>+ Add Task</Button>
+          <Button variant="primary" onClick={() => setShowAddTask(true)} disabled={sourceStatus !== 'available'}>+ Add Task</Button>
         </div>
+
+        {error && <div className="panel mb-6 p-4 text-sm text-[var(--text-3)]">{error}. Configure Notion to read or change tasks.</div>}
 
         {showAddTask && (
           <div className="hq-rise elevated mb-8 p-5">

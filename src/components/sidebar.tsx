@@ -64,6 +64,17 @@ const mobileTabsRaw = [
   { href: "/agents", label: "Agents", icon: Bot },
 ];
 
+function Logo() {
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className="w-8 h-8 rounded-[10px] bg-[var(--text)] flex items-center justify-center shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]">
+        <span className="text-[#0a0b0d] font-bold text-[13px] tracking-tight">H</span>
+      </div>
+      <span className="font-semibold text-[var(--text)] tracking-[-0.01em] text-[15px]">Hermy HQ</span>
+    </div>
+  );
+}
+
 export function Sidebar() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
@@ -82,15 +93,6 @@ export function Sidebar() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
-
-  const Logo = () => (
-    <div className="flex items-center gap-2.5">
-      <div className="w-8 h-8 rounded-[10px] bg-[var(--text)] flex items-center justify-center shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]">
-        <span className="text-[#0a0b0d] font-bold text-[13px] tracking-tight">H</span>
-      </div>
-      <span className="font-semibold text-[var(--text)] tracking-[-0.01em] text-[15px]">Hermy HQ</span>
-    </div>
-  );
 
   return (
     <>
@@ -220,11 +222,8 @@ export function Sidebar() {
         {/* Footer */}
         <div className="px-4 py-4 border-t border-[var(--line)]">
           <div className="flex items-center gap-2 text-[var(--text-3)] text-[11.5px]">
-            <span className="relative flex w-1.5 h-1.5">
-              <span className="absolute inline-flex h-full w-full rounded-full bg-[var(--up)] opacity-60 animate-ping" />
-              <span className="relative inline-flex w-1.5 h-1.5 rounded-full bg-[var(--up)]" />
-            </span>
-            <span>All systems online</span>
+            <span className="relative inline-flex w-1.5 h-1.5 rounded-full bg-[var(--text-4)]" aria-hidden />
+            <span>System status in dashboard</span>
           </div>
         </div>
       </aside>

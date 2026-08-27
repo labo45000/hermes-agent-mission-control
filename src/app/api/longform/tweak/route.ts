@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
     fs.mkdirSync(TRIGGERS_DIR, { recursive: true });
   }
 
-  // Write trigger file for Nova to pick up
+  // Write a trigger file for the configured long-form worker.
   const trigger = {
     type: "longform-tweak",
     scriptId: id,

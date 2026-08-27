@@ -1,7 +1,8 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { Plus, X, Droplets } from 'lucide-react';
-import { Button, Skeleton, EmptyState, rise } from '@/components/ui/kit';
+import { Button, Skeleton, rise } from '@/components/ui/kit';
+import { executeGardenMutation } from '@/lib/garden-client';
 
 interface Plant {
   id: string;
@@ -13,16 +14,17 @@ interface Plant {
   img?: string;
   tip?: string;
   addedBy?: string;
-  addedAt?: string;
+  addedAt: string;
 }
 
 interface GardenBlob {
   version: number;
+  revision: number;
   lastUpdated: string;
   plants: Plant[];
 }
 
-const EMPTY_FORM: Omit<Plant, 'id'> = {
+const EMPTY_FORM: Omit<Plant, 'id' | 'addedAt'> = {
   name: '', emoji: '🌿', location: 'indoor', waterSchedule: '', waterDays: [], img: '', tip: '', addedBy: '',
 };
 
@@ -42,7 +44,9 @@ export default function GardenPage() {
     if (!silent) setLoading(true);
     try {
       const res = await fetch('/api/garden');
+      if (!res.ok) throw new Error(`Garden request failed (${res.status})`);
       const data: GardenBlob = await res.json();
+      setError(null);
       if (data.lastUpdated !== lastUpdatedRef.current) {
         lastUpdatedRef.current = data.lastUpdated;
         setBlob(data);
@@ -59,37 +63,39 @@ export default function GardenPage() {
 
   async function removePlant(id: string) {
     if (!blob) return;
-    const updated: GardenBlob = {
-      ...blob,
-      lastUpdated: new Date().toISOString(),
-      plants: blob.plants.filter(p => p.id !== id),
-    };
-    setSaving(true);
-    await fetch('/api/garden', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
-    setBlob(updated);
-    lastUpdatedRef.current = updated.lastUpdated;
-    setSaving(false);
+    await executeGardenMutation({
+      request: () => fetch('/api/garden', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'remove', expectedRevision: blob.revision, id }),
+      }),
+      setSaving, setError,
+      onSaved: (saved) => { setBlob(saved); lastUpdatedRef.current = saved.lastUpdated; },
+      onConflict: (garden) => {
+        if (garden) { setBlob(garden); lastUpdatedRef.current = garden.lastUpdated; }
+        setError('The garden changed in another session. Latest plants loaded; review and retry.');
+      },
+      retryMessage: 'Plant was not removed. Reload and retry.',
+    });
   }
 
   async function addPlant() {
     if (!blob || !form.name.trim()) return;
-    const newPlant: Plant = {
-      ...form,
-      id: `plant-${Date.now()}`,
-      addedAt: new Date().toISOString().split('T')[0],
-    };
-    const updated: GardenBlob = {
-      ...blob,
-      lastUpdated: new Date().toISOString(),
-      plants: [...blob.plants, newPlant],
-    };
-    setSaving(true);
-    await fetch('/api/garden', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
-    setBlob(updated);
-    lastUpdatedRef.current = updated.lastUpdated;
-    setForm({ ...EMPTY_FORM });
-    setShowForm(false);
-    setSaving(false);
+    await executeGardenMutation({
+      request: () => fetch('/api/garden', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add', expectedRevision: blob.revision, plant: form }),
+      }),
+      setSaving, setError,
+      onSaved: (saved) => {
+        setBlob(saved); lastUpdatedRef.current = saved.lastUpdated;
+        setForm({ ...EMPTY_FORM }); setShowForm(false);
+      },
+      onConflict: (garden) => {
+        if (garden) { setBlob(garden); lastUpdatedRef.current = garden.lastUpdated; }
+        setError('The garden changed in another session. Your form is preserved; review the latest garden and retry.');
+      },
+      retryMessage: 'Plant was not saved. Keep this form open and retry.',
+    });
   }
 
   if (loading) {
@@ -112,10 +118,15 @@ export default function GardenPage() {
     );
   }
 
-  if (error || !blob || !Array.isArray(blob.plants)) {
+  if (!blob || !Array.isArray(blob.plants)) {
     return (
       <div className="w-full mx-auto p-6">
-        <EmptyState title={error ?? 'Unexpected data format — please reload.'} />
+        <div className="panel p-8 max-w-xl">
+          <div className="eyebrow mb-3">Garden unavailable</div>
+          <h1 className="text-2xl font-semibold">Plants could not be loaded</h1>
+          <p className="mt-2 text-sm text-[var(--text-3)]">{error ?? 'The persisted garden has an unexpected format.'}</p>
+          <Button variant="primary" onClick={() => fetchGarden()} className="mt-5">Retry</Button>
+        </div>
       </div>
     );
   }
@@ -142,7 +153,7 @@ export default function GardenPage() {
           <div className="eyebrow mb-2.5">🌿 Shared Garden</div>
           <h1 className="text-[32px] font-semibold tracking-[-0.025em] leading-none text-[var(--text)]">Our Garden</h1>
           <p className="num text-[var(--text-4)] text-[12px] mt-3">
-            Syncs with Marwa every 30s · {blob.plants.length} plants
+            Private Turbo garden · persisted to Hermy HQ · {blob.plants.length} plants
           </p>
         </div>
         <Button variant="primary" onClick={() => setShowForm(true)}>
@@ -175,6 +186,23 @@ export default function GardenPage() {
             <Button variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button>
           </div>
         </div>
+      )}
+
+      {error && (
+        <div role="status" className="panel mb-6 border-[color-mix(in_srgb,var(--warn)_35%,var(--line))] p-4 text-sm text-[var(--text-2)]">
+          {error}
+        </div>
+      )}
+
+      {blob.plants.length === 0 && (
+        <section className="panel mb-8 grid min-h-[260px] place-items-center px-6 py-12 text-center">
+          <div className="max-w-md">
+            <div className="mx-auto mb-5 grid h-14 w-14 place-items-center rounded-full bg-[var(--surface-2)] text-2xl" aria-hidden>🌱</div>
+            <h2 className="text-xl font-semibold text-[var(--text)]">No plants yet</h2>
+            <p className="mt-2 text-sm leading-relaxed text-[var(--text-3)]">Add the first plant to start a shared care list and build this week’s watering schedule.</p>
+            <Button variant="primary" onClick={() => setShowForm(true)} className="mt-5"><Plus className="h-4 w-4" />Add first plant</Button>
+          </div>
+        </section>
       )}
 
       {/* Watering Calendar */}

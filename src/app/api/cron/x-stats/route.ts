@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export const maxDuration = 30;
@@ -16,8 +17,11 @@ export async function GET(request: Request) {
 
   try {
     const existing = await prisma.dataStore.findUnique({ where: { key: "x-account-stats" } });
-    const current = (existing?.data as any) || {};
-    const handle = current.xHandle || "yourhandle";
+    const current = (existing?.data as Record<string, Prisma.JsonValue>) || {};
+    const handle = typeof current.xHandle === "string" && current.xHandle.trim() ? current.xHandle.trim() : null;
+    if (!handle) {
+      return NextResponse.json({ error: "X account handle is not configured", handle: null }, { status: 409 });
+    }
 
     const res = await fetch(
       `https://api.twitter.com/2/users/by/username/${handle}?user.fields=public_metrics`,
@@ -37,7 +41,7 @@ export async function GET(request: Request) {
 
     await prisma.dataStore.upsert({
       where: { key: "x-account-stats" },
-      update: { data: { ...current, xFollowers: followers, updatedAt: new Date().toISOString() } },
+      update: { data: { ...current, xFollowers: followers, updatedAt: new Date().toISOString() } as Prisma.InputJsonObject },
       create: { key: "x-account-stats", data: { xFollowers: followers, xHandle: handle, xGoal: 100000, updatedAt: new Date().toISOString() } },
     });
 

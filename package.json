@@ -8,7 +8,7 @@
     "postinstall": "prisma generate",
     "start": "next start",
     "lint": "eslint",
-    "test:memory": "tsx --test src/lib/memory.test.ts && npm --prefix hermes-bridge test",
+    "test:memory": "tsx --test src/lib/memory.test.ts src/lib/personal-dashboard.test.ts src/lib/garden-release-blockers.test.ts && npm --prefix hermes-bridge test",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",

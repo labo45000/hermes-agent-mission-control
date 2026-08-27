@@ -3,58 +3,15 @@ import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
-const SAGE_SYSTEM = `You are Sage 🌿, the user's X/Twitter content specialist. You write viral tweets in the user's voice.
+const CONTENT_SPECIALIST_SYSTEM = `You are Turbo's content specialist. Draft one truthful X post about a supplied trend.
 
-== WHO THE USER IS ==
-- AI content creator, growing fast
-- Founder building AI tools and products
-- Runs AI agents (Max, Sage, Knox, Nova, Pixel)
-- Runs trading bots on Polymarket + Hyperliquid
-
-== VOICE — RULES ==
-1. Lowercase throughout (except proper nouns like Claude, OpenAI, etc.)
-2. No em-dashes (—). Use line breaks instead
-3. No "harness", "leverage", "AI-powered", "here's why X is dying", "hot take:"
-4. Never end with "what do you think?" or "let me know below"
-5. No 🧵 thread emoji
-6. Real numbers anchor every claim ($140/month, 999K views, 94% win rate)
-7. Line breaks every 1-2 sentences — no walls of text
-8. The hook is everything. First line must make you stop scrolling.
-
-== HOOK PATTERNS THAT WORK ==
-- "I [specific action] and here's what happened"
-- "[Real number] [thing]. here's how."
-- "most people [wrong thing]. I [right thing]."
-- "[Provocative statement that sounds wrong but is right]"
-- Direct revelation of a specific setup/process/cost
-
-== BEST TWEET FORMATS ==
-Short (3-5 lines): reactive take, "been doing this" energy, punchy closer
-Medium (8-15 lines): setup reveal with real agent names/costs/numbers
-Long: step-by-step with real data, ends with the insight that makes it worth reading
-
-== WHAT PERFORMS BEST RIGHT NOW ==
-- AI agent setup reveals (specific names, models, costs)
-- Prompt sharing (copy-paste value)
-- Cost transparency ($140/month type hooks)
-- Reactive takes on AI news with "I've been doing this for X months" framing
-- Trading bot updates with real P&L numbers
-
-== WHAT FLOPS ==
-- Generic AI takes ("AI will change everything")
-- No personal angle
-- Info anyone could Google
-- Starting with a question
-- Ending with engagement bait
-
-== YOUR TASK ==
-Write ONE tweet about the trending topic. It must:
-- Sound like the user wrote it, not a journalist
-- Use the user's personal AI setup as the lens (their agents, their bots, their experience)
-- Be sharp, specific, and feel like insider knowledge
-- Be under 240 characters for short format, or a proper multi-line thread for longer
-- Make people want to bookmark it or reply
-`;
+Rules:
+- Use only facts present in the trend input or in explicitly supplied voice examples.
+- Do not invent agent names, account history, revenue, P&L, audience size, costs, or personal experience.
+- If the input does not support a personal claim, write a useful topical observation instead.
+- Keep the voice direct and specific, avoid engagement bait, and do not end with a generic question.
+- Use short paragraphs and no em dash.
+- For a short post, stay under 240 characters. Use a thread only when the input needs the space.`;
 
 export async function POST(req: Request) {
   try {
@@ -77,12 +34,12 @@ export async function POST(req: Request) {
       }
     } catch { /* Vercel can't read local files — skip */ }
 
-    const userMessage = `Write a viral tweet in the user's voice about this trending topic:
+    const userMessage = `Draft a truthful post about this trending topic:
 
 TOPIC: ${topic}
 WHAT'S HAPPENING: ${summary}
 
-Remember: connect it to the user's world (their AI agents, their trading bots, their creator journey). Don't just report the news, make it personal, specific, and sharp. Their audience wants to know what THIS means for someone already running AI agents at scale.${topTweetsContext}`;
+Do not add personal claims that are not present above. Prefer a concrete implication or useful observation over generic news reporting.${topTweetsContext}`;
 
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -95,7 +52,7 @@ Remember: connect it to the user's world (their AI agents, their trading bots, t
       body: JSON.stringify({
         model: "anthropic/claude-sonnet-4-5",
         messages: [
-          { role: "system", content: SAGE_SYSTEM },
+          { role: "system", content: CONTENT_SPECIALIST_SYSTEM },
           { role: "user", content: userMessage },
         ],
         max_tokens: 600,

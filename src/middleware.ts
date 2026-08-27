@@ -5,15 +5,15 @@ import { getToken } from 'next-auth/jwt';
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // DEV-ONLY local bypass (never active on Vercel preview/prod builds).
-  if (process.env.NODE_ENV === 'development') {
+  // DEV-ONLY local bypass. Garden mutations still reach the route's session guard.
+  const isGardenMutation = pathname === '/api/garden' && request.method !== 'GET';
+  if (process.env.NODE_ENV === 'development' && !isGardenMutation) {
     return NextResponse.next();
   }
 
   // Skip auth for NextAuth routes, assets, login, and public embeddable charts
   if (
     pathname.startsWith('/api/auth/') ||
-    pathname.startsWith('/api/garden') ||
     pathname.startsWith('/_next/') ||
     pathname.startsWith('/favicon.ico') ||
     pathname === '/login'
