@@ -11,6 +11,14 @@ export const PROFILE_GROUPS = {
 } as const;
 
 export type ProfileStatus = "online" | "offline" | "unknown" | "error";
+export type HermesRuntimeStatus = { label: string; tone: "online" | "offline" | "unknown" };
+
+export function formatHermesRuntimeStatus(health: { online?: boolean } | null): HermesRuntimeStatus {
+  if (!health) return { label: "Checking Hermes…", tone: "unknown" };
+  return health.online
+    ? { label: "Hermes reachable", tone: "online" }
+    : { label: "Hermes unavailable", tone: "offline" };
+}
 export type ProfileInput = {
   name?: unknown;
   id?: unknown;

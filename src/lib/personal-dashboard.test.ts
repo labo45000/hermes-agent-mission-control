@@ -8,6 +8,7 @@ import {
   buildProfileRoster,
   evidenceFromRows,
   evidenceFromValue,
+  formatHermesRuntimeStatus,
   isGardenMutationAuthorized,
   normalizeProfileStatus,
   parseGardenOperation,
@@ -31,6 +32,12 @@ test("normalizes only heartbeat-backed statuses as online", () => {
   assert.equal(normalizeProfileStatus("running"), "online");
   assert.equal(normalizeProfileStatus("failed"), "error");
   assert.equal(normalizeProfileStatus(undefined), "unknown");
+});
+
+test("describes Hermes runtime without conflating it with the bridge", () => {
+  assert.deepEqual(formatHermesRuntimeStatus(null), { label: "Checking Hermes…", tone: "unknown" });
+  assert.deepEqual(formatHermesRuntimeStatus({ online: true }), { label: "Hermes reachable", tone: "online" });
+  assert.deepEqual(formatHermesRuntimeStatus({ online: false }), { label: "Hermes unavailable", tone: "offline" });
 });
 
 test("marks evidence available only inside its documented freshness window", () => {
